@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { User, AuthContextType } from '@/types';
 
@@ -32,6 +31,15 @@ const mockUsers: (User & { password: string })[] = [
     role: 'employee',
     isActive: true,
     createdAt: '2024-01-01'
+  },
+   {
+    id: '4',
+    email: 'rohit@gmail.com',
+    password: '123',
+    name: 'Rohit Kurmi',
+    role: 'employee',
+    isActive: true,
+    createdAt: '2024-01-01'
   }
 ];
 
@@ -59,6 +67,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = () => {
     setUser(null);
     localStorage.removeItem('currentUser');
+    localStorage.removeItem('token');
+    localStorage.removeItem('userData');
+    window.location.href = '/'; // Force redirect to login
   };
 
   return (
@@ -66,17 +77,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       user,
       login,
       logout,
-      isAuthenticated: !!user
+      isAuthenticated: !!user,
+      setUser, // Provide setUser in context
     }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-};
+export { AuthContext };

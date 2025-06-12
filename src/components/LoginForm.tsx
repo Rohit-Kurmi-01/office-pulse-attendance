@@ -1,6 +1,5 @@
-
 import React, { useState } from 'react';
-import { useAuth } from '@/context/AuthContext';
+import { useAuth } from '@/context/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,14 +7,39 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Clock, Lock, Mail } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useNavigate } from 'react-router-dom';
+import { loginApi } from '@/lib/api';
 
 const LoginForm = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const { login } = useAuth();
+
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const { setUser } = useAuth();
+
+  // If auth token is present, redirect to dashboard
+  React.useEffect(() => {
+    const token = localStorage.getItem('token');
+    const userData = localStorage.getItem('userData');
+    const currentPath = window.location.pathname;
+    // Only redirect if not already on a dashboard route
+    if (token && userData && currentPath === '/') {
+      try {
+        const user = JSON.parse(userData);
+        if (user.role === 'admin') {
+          navigate('/admin-dashboard');
+        } else {
+          navigate('/employee-dashboard');
+        }
+      } catch {
+        // fallback: just go to employee dashboard
+        navigate('/employee-dashboard');
+      }
+    }
+  }, [navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,17 +47,50 @@ const LoginForm = () => {
     setError('');
 
     try {
-      const success = await login(email, password);
-      if (success) {
-        toast({
-          title: "Login Successful",
-          description: "Welcome to AttendanceTracker Pro",
-        });
-      } else {
-        setError('Invalid email or password');
+      // Only send email and password
+      const data = await loginApi(email, password);
+      toast({
+        title: 'Login Successful',
+        description: 'Welcome to AttendanceTracker Pro',
+      });
+      if (data.payload?.auth_token) {
+        localStorage.setItem('token', data.payload.auth_token);
+        // Defensive: extract user fields from payload, fallback to empty/defaults
+        const payload = data.payload as Record<string, unknown>;
+        // Accept both id and user_id for compatibility
+        const id = typeof payload.id === 'string' ? payload.id : (typeof payload.user_id === 'string' ? payload.user_id : String(payload.user_id ?? ''));
+        const name = typeof payload.name === 'string' ? payload.name : '';
+        let role: 'admin' | 'employee' = 'employee';
+        if (payload.role === 'admin' || payload.role === 'employee') role = payload.role;
+        const isActive = payload.is_active === '1' || payload.is_active === 1 || payload.is_active === true;
+        const createdAt = typeof payload.created_at === 'string' ? payload.created_at : new Date().toISOString().split('T')[0];
+        const currentUser = {
+          id,
+          name,
+          email: typeof payload.email === 'string' ? payload.email : '',
+          role,
+          isActive,
+          createdAt
+        };
+        localStorage.setItem('currentUser', JSON.stringify(currentUser));
+        if (setUser) setUser(currentUser);
+        localStorage.setItem('userData', JSON.stringify(currentUser));
+      }
+      // Redirect based on user role from backend
+      if (data.payload && 'role' in data.payload) {
+        const userRole = (data.payload as { role?: string }).role;
+        if (userRole === 'admin') {
+          navigate('/admin-dashboard');
+        } else {
+          navigate('/employee-dashboard');
+        }
       }
     } catch (err) {
-      setError('An error occurred during login');
+      if (err instanceof Error) {
+        setError(err.message || 'An error occurred during login');
+      } else {
+        setError('An error occurred during login');
+      }
     } finally {
       setLoading(false);
     }

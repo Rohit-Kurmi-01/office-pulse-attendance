@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,55 +6,65 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Calendar, Download, Search, Filter, FileSpreadsheet, Users, Clock } from 'lucide-react';
-import { AttendanceRecord } from '@/types';
+import { listAttendance, AttendanceRecordDB, getEmployees, getAttendanceByUserId, updateAttendance } from '@/lib/api';
 import * as XLSX from 'xlsx';
+import { AttendanceRecordDB as AttendanceRecordDBType } from '@/types';
+import { calculateSessionDuration } from './helper/timeHelper';
 
 interface AttendanceHistoryProps {
   userId?: string;
   isAdmin?: boolean;
+
 }
 
+
+
 const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) => {
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [filteredRecords, setFilteredRecords] = useState<AttendanceRecord[]>([]);
+  // Only use the userId prop, do not fallback to localStorage
+  const [records, setRecords] = useState<AttendanceRecordDBType[]>([]);
+  const [filteredRecords, setFilteredRecords] = useState<AttendanceRecordDBType[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateRange, setDateRange] = useState('all');
+  const [pendingEveningCheckIn, setPendingEveningCheckIn] = useState<{ [id: string]: string | null }>({});
+  const [pendingEveningCheckOut, setPendingEveningCheckOut] = useState<{ [id: string]: string | null }>({});
 
   useEffect(() => {
-    const savedRecords = JSON.parse(localStorage.getItem('attendanceRecords') || '[]');
-    let recordsToShow = savedRecords;
-    
-    if (!isAdmin && userId) {
-      recordsToShow = savedRecords.filter((r: AttendanceRecord) => r.userId === userId);
+    async function fetchRecords() {
+      try {
+        let data: AttendanceRecordDB[];
+        if (userId) {
+          data = await getAttendanceByUserId(userId);
+        } else {
+          data = await listAttendance({});
+        }
+        setRecords(data);
+        setFilteredRecords(data);
+      } catch (err) {
+        setRecords([]);
+        setFilteredRecords([]);
+      }
     }
-    
-    setRecords(recordsToShow);
-    setFilteredRecords(recordsToShow);
+    fetchRecords();
   }, [userId, isAdmin]);
 
   useEffect(() => {
     let filtered = records;
-    
     if (searchTerm) {
       filtered = filtered.filter(record => 
-        record.userName.toLowerCase().includes(searchTerm.toLowerCase())
+        record.username.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    
     if (dateFilter) {
       filtered = filtered.filter(record => record.date === dateFilter);
     }
-
     if (statusFilter !== 'all') {
       filtered = filtered.filter(record => record.status === statusFilter);
     }
-
     if (dateRange !== 'all') {
       const today = new Date();
       const filterDate = new Date();
-      
       switch (dateRange) {
         case 'today':
           filterDate.setDate(today.getDate());
@@ -67,50 +76,145 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
           filterDate.setMonth(today.getMonth() - 1);
           break;
       }
-      
       if (dateRange !== 'all') {
         filtered = filtered.filter(record => 
           new Date(record.date) >= filterDate
         );
       }
     }
-    
     setFilteredRecords(filtered);
   }, [records, searchTerm, dateFilter, statusFilter, dateRange]);
 
-  const getStatusBadge = (record: AttendanceRecord) => {
-    if (record.checkIn && record.checkOut) {
+  // Helper to format seconds as HH:mm
+  const formatDuration = (seconds: number) => {
+    if (seconds <= 0) return '--';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  };
+
+  // Helper to format seconds as HH:mm, but only if both times are present
+  const formatSession = (inTime: string | null | undefined, outTime: string | null | undefined) => {
+    if (!inTime || !outTime) return '--';
+    // Parse as Date objects using today's date
+    const today = new Date().toISOString().split('T')[0];
+    const inDate = new Date(`${today} ${inTime}`);
+    const outDate = new Date(`${today} ${outTime}`);
+    if (isNaN(inDate.getTime()) || isNaN(outDate.getTime())) return '--';
+    const seconds = Math.max((outDate.getTime() - inDate.getTime()) / 1000, 0);
+    if (seconds === 0) return '--';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  };
+
+  const getSessionDurations = React.useCallback((record: AttendanceRecordDBType) => {
+    const morningSeconds = (() => {
+      if (!record.morning_check_in || !record.morning_check_out) return 0;
+      const today = new Date().toISOString().split('T')[0];
+      const inDate = new Date(`${today} ${record.morning_check_in}`);
+      const outDate = new Date(`${today} ${record.morning_check_out}`);
+      if (isNaN(inDate.getTime()) || isNaN(outDate.getTime())) return 0;
+      return Math.max((outDate.getTime() - inDate.getTime()) / 1000, 0);
+    })();
+    const eveningSeconds = (() => {
+      if (!record.evening_check_in || !record.evening_check_out) return 0;
+      const today = new Date().toISOString().split('T')[0];
+      const inDate = new Date(`${today} ${record.evening_check_in}`);
+      const outDate = new Date(`${today} ${record.evening_check_out}`);
+      if (isNaN(inDate.getTime()) || isNaN(outDate.getTime())) return 0;
+      return Math.max((outDate.getTime() - inDate.getTime()) / 1000, 0);
+    })();
+    // Calculate lunch break: time between morning_check_out and evening_check_in
+    const lunchSeconds = (() => {
+      if (!record.morning_check_out || !record.evening_check_in) return 0;
+      const today = new Date().toISOString().split('T')[0];
+      const outDate = new Date(`${today} ${record.morning_check_out}`);
+      const inDate = new Date(`${today} ${record.evening_check_in}`);
+      if (isNaN(inDate.getTime()) || isNaN(outDate.getTime())) return 0;
+      return Math.max((inDate.getTime() - outDate.getTime()) / 1000, 0);
+    })();
+    const totalSeconds = morningSeconds + eveningSeconds;
+    const total = totalSeconds > 0
+      ? `${Math.floor(totalSeconds / 3600).toString().padStart(2, '0')}:${Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0')}`
+      : '--';
+    const lunch = lunchSeconds > 0
+      ? `${Math.floor(lunchSeconds / 3600).toString().padStart(2, '0')}:${Math.floor((lunchSeconds % 3600) / 60).toString().padStart(2, '0')}`
+      : '--';
+    return {
+      morning: formatSession(record.morning_check_in, record.morning_check_out),
+      evening: formatSession(record.evening_check_in, record.evening_check_out),
+      lunch,
+      total
+    };
+  }, []);
+
+  useEffect(() => {
+    async function updateMissingWorkingHours() {
+      // Only run for records that have check-outs but missing workingHours
+      const updates = filteredRecords.filter(r =>
+        (r.morning_check_out || r.evening_check_out) && (!r.workingHours || r.workingHours === '')
+      );
+      for (const rec of updates) {
+        const working = getSessionDurations(rec).total;
+        if (working && working !== '--') {
+          // Update the record in the backend with all required fields in snake_case
+          await updateAttendance(rec.id, {
+            user_id: rec.user_id,
+            username: rec.username,
+            date: rec.date,
+            status: rec.status,
+            ip_address: rec.ip_address,
+            morning_check_in: rec.morning_check_in,
+            morning_check_out: rec.morning_check_out,
+            evening_check_in: rec.evening_check_in,
+            evening_check_out: rec.evening_check_out,
+            working_hours: working
+          } as Partial<AttendanceRecordDB> // Use Partial<AttendanceRecordDB> to specify the type for snake_case fields
+   ) }
+      }
+    }
+    if (filteredRecords.length > 0) {
+      updateMissingWorkingHours();
+    }
+  }, [filteredRecords, getSessionDurations]);
+
+  const getStatusBadge = (record: AttendanceRecordDBType) => {
+    if (record.morning_check_in && record.morning_check_out && record.evening_check_in && record.evening_check_out) {
       return <Badge className="bg-green-100 text-green-800 hover:bg-green-200">Present</Badge>;
-    } else if (record.checkIn) {
+    } else if (record.morning_check_in || record.evening_check_in) {
       return <Badge className="bg-yellow-100 text-yellow-800 hover:bg-yellow-200">Partial</Badge>;
     } else {
       return <Badge className="bg-red-100 text-red-800 hover:bg-red-200">Absent</Badge>;
     }
   };
 
-  const calculateWorkingHours = (checkIn?: string, checkOut?: string) => {
-    if (!checkIn || !checkOut) return '--';
-    
-    const inTime = new Date(`2000-01-01 ${checkIn}`);
-    const outTime = new Date(`2000-01-01 ${checkOut}`);
-    const diff = outTime.getTime() - inTime.getTime();
-    const hours = Math.floor(diff / (1000 * 60 * 60));
-    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    
-    return `${hours}h ${minutes}m`;
-  };
-
   const exportToExcel = () => {
     const exportData = filteredRecords.map(record => ({
       'Date': new Date(record.date).toLocaleDateString(),
-      'Employee Name': record.userName,
-      'Check In': record.checkIn || 'Not recorded',
-      'Check Out': record.checkOut || 'Not recorded',
-      'Working Hours': calculateWorkingHours(record.checkIn, record.checkOut),
+      'Employee Name': record.username,
+      'Check In': record.morning_check_in || 'Not recorded',
+      'Morning Check Out': record.morning_check_out || 'Not recorded',
+      'Evening Check In': record.evening_check_in || 'Not recorded',
+      'Evening Check Out': record.evening_check_out || 'Not recorded',
+      'Working Hours': record.workingHours || getSessionDurations(record).total,
       'Status': record.status.charAt(0).toUpperCase() + record.status.slice(1),
-      'IP Address': record.ipAddress,
-      'Total Hours (Decimal)': record.checkIn && record.checkOut ? 
-        ((new Date(`2000-01-01 ${record.checkOut}`).getTime() - new Date(`2000-01-01 ${record.checkIn}`).getTime()) / (1000 * 60 * 60)).toFixed(2) : '0'
+      'IP Address': record.ip_address,
+      'Total Hours (Decimal)': (() => {
+        const today = new Date().toISOString().split('T')[0];
+        let totalMs = 0;
+        if (record.morning_check_in && record.morning_check_out) {
+          const inDate = new Date(`${today}T${record.morning_check_in}`);
+          const outDate = new Date(`${today}T${record.morning_check_out}`);
+          totalMs += outDate.getTime() - inDate.getTime();
+        }
+        if (record.evening_check_in && record.evening_check_out) {
+          const inDate = new Date(`${today}T${record.evening_check_in}`);
+          const outDate = new Date(`${today}T${record.evening_check_out}`);
+          totalMs += outDate.getTime() - inDate.getTime();
+        }
+        return totalMs > 0 ? (totalMs / (1000 * 60 * 60)).toFixed(2) : '0';
+      })()
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
@@ -149,7 +253,7 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
   return (
     <div className="space-y-6">
       {/* Stats Cards */}
-      {isAdmin && (
+      {/* {isAdmin && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <Card className="bg-gradient-to-r from-blue-50 to-blue-100 border-blue-200">
             <CardContent className="p-4">
@@ -199,7 +303,7 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
             </CardContent>
           </Card>
         </div>
-      )}
+      )} */}
 
       {/* Main Table Card */}
       <Card className="shadow-xl border-0 bg-white/70 backdrop-blur-sm">
@@ -228,7 +332,8 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
         
         <CardContent className="p-6">
           {/* Enhanced Filters */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          
+          {/* <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             {isAdmin && (
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-700">Search Employee</label>
@@ -283,7 +388,7 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
                 </SelectContent>
               </Select>
             </div>
-          </div>
+          </div> */}
 
           {/* Results Summary */}
           {filteredRecords.length > 0 && (
@@ -302,8 +407,10 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
                 <TableRow className="bg-gray-50 hover:bg-gray-50">
                   <TableHead className="font-semibold text-gray-900">Date</TableHead>
                   {isAdmin && <TableHead className="font-semibold text-gray-900">Employee</TableHead>}
-                  <TableHead className="font-semibold text-gray-900">Check In</TableHead>
-                  <TableHead className="font-semibold text-gray-900">Check Out</TableHead>
+                  <TableHead className="font-semibold text-gray-900">Morning log In</TableHead>
+                  <TableHead className="font-semibold text-gray-900">Morning log Out</TableHead>
+                  <TableHead className="font-semibold text-gray-900">Evening log In</TableHead>
+                  <TableHead className="font-semibold text-gray-900">Evening log Out</TableHead>
                   <TableHead className="font-semibold text-gray-900">Working Hours</TableHead>
                   <TableHead className="font-semibold text-gray-900">Status</TableHead>
                   {isAdmin && <TableHead className="font-semibold text-gray-900">IP Address</TableHead>}
@@ -331,28 +438,91 @@ const AttendanceHistory = ({ userId, isAdmin = false }: AttendanceHistoryProps) 
                           day: 'numeric'
                         })}
                       </TableCell>
-                      {isAdmin && <TableCell className="font-medium text-gray-900">{record.userName}</TableCell>}
+                      {isAdmin && <TableCell className="font-medium text-gray-900">{record.username}</TableCell>}
                       <TableCell className="font-mono text-sm">
-                        {record.checkIn ? (
-                          <span className="text-green-700 bg-green-50 px-2 py-1 rounded">{record.checkIn}</span>
+                        {record.morning_check_in ? (
+                          <span className="text-green-700 bg-green-50 px-2 py-1 rounded">{record.morning_check_in}</span>
                         ) : (
                           <span className="text-gray-400">--</span>
                         )}
                       </TableCell>
                       <TableCell className="font-mono text-sm">
-                        {record.checkOut ? (
-                          <span className="text-blue-700 bg-blue-50 px-2 py-1 rounded">{record.checkOut}</span>
+                        {record.morning_check_out ? (
+                          <span className="text-green-700 bg-green-50 px-2 py-1 rounded">{record.morning_check_out}</span>
                         ) : (
                           <span className="text-gray-400">--</span>
                         )}
                       </TableCell>
-                      <TableCell className="font-medium">
-                        {calculateWorkingHours(record.checkIn, record.checkOut)}
+                      <TableCell className="font-mono text-sm">
+                        {record.evening_check_in ? (
+                          <span
+                            className="text-blue-700 bg-blue-50 px-2 py-1 rounded cursor-pointer"
+                            onClick={() => setPendingEveningCheckIn(prev => ({ ...prev, [record.id]: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }))}
+                          >
+                            {record.evening_check_in}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">--</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {record.evening_check_out ? (
+                          <span
+                            className="text-blue-700 bg-blue-50 px-2 py-1 rounded cursor-pointer"
+                            onClick={() => setPendingEveningCheckOut(prev => ({ ...prev, [record.id]: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }))}
+                          >
+                            {record.evening_check_out}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">--</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {(() => {
+                          // Use pending values if set, otherwise use record values
+                          const eveningCheckIn = pendingEveningCheckIn[record.id] || record.evening_check_in;
+                          const eveningCheckOut = pendingEveningCheckOut[record.id] || record.evening_check_out;
+                          const morning = formatSession(record.morning_check_in, record.morning_check_out);
+                          const evening = formatSession(eveningCheckIn, eveningCheckOut);
+                          // Lunch is time between morning_check_out and eveningCheckIn
+                          let lunch = '--';
+                          if (record.morning_check_out && eveningCheckIn) {
+                            const today = new Date().toISOString().split('T')[0];
+                            const outDate = new Date(`${today} ${record.morning_check_out}`);
+                            const inDate = new Date(`${today} ${eveningCheckIn}`);
+                            const lunchSeconds = Math.max((inDate.getTime() - outDate.getTime()) / 1000, 0);
+                            if (lunchSeconds > 0) {
+                              const hours = Math.floor(lunchSeconds / 3600);
+                              const minutes = Math.floor((lunchSeconds % 3600) / 60);
+                              lunch = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+                            }
+                          }
+                          // Total is sum of both sessions
+                          let total = '--';
+                          if (morning !== '--' && evening !== '--') {
+                            const [mh, mm] = morning.split(':').map(Number);
+                            const [eh, em] = evening.split(':').map(Number);
+                            if (!isNaN(mh) && !isNaN(mm) && !isNaN(eh) && !isNaN(em)) {
+                              const totalMinutes = mh * 60 + mm + eh * 60 + em;
+                              const hours = Math.floor(totalMinutes / 60);
+                              const minutes = totalMinutes % 60;
+                              total = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+                            }
+                          }
+                          return (
+                            <span>
+                              <span className="block">Morning: {morning}</span>
+                              <span className="block">Evening: {evening}</span>
+                              <span className="block">Lunch: {lunch}</span>
+                              <span className="block font-semibold p-2 bg-green-300 border-2 rounded-2xl">Total: {total}</span>
+                            </span>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell>{getStatusBadge(record)}</TableCell>
                       {isAdmin && (
                         <TableCell className="font-mono text-xs text-gray-600 bg-gray-50">
-                          {record.ipAddress}
+                          {record.ip_address}
                         </TableCell>
                       )}
                     </TableRow>
