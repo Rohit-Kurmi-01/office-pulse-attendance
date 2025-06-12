@@ -10,6 +10,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import EmployeeDashboard from "./pages/EmployeeDashboard";
 import React, { useEffect, useState } from "react";
 import { checkTrialStatus } from "@/lib/api";
+import { useMobileBlock } from '@/hooks/use-mobile';
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,18 @@ function useTrialStatus() {
 
 const App = () => {
   const { trialStatus, trialMessage } = useTrialStatus();
+  const isMobile = useMobileBlock();
+
+  if (isMobile) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-yellow-50">
+        <div className="p-8 bg-white rounded shadow text-center">
+          <h1 className="text-2xl font-bold text-yellow-600 mb-4">Mobile Not Supported</h1>
+          <p className="text-gray-700">This website is not accessible on mobile devices. Please use a desktop or laptop browser.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (trialStatus === "checking") {
     return <div className="flex items-center justify-center h-screen">Checking trial status...</div>;

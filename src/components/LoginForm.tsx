@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/context/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,13 +9,16 @@ import { Clock, Lock, Mail } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
 import { loginApi } from '@/lib/api';
+import { useMobileBlock } from '@/hooks/use-mobile';
 
 const LoginForm = () => {
+  const isMobile = useMobileBlock();
+
+  // All hooks must be called unconditionally
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
   const { toast } = useToast();
   const navigate = useNavigate();
   const { setUser } = useAuth();
@@ -40,6 +43,17 @@ const LoginForm = () => {
       }
     }
   }, [navigate]);
+
+  if (isMobile) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-yellow-50">
+        <div className="p-8 bg-white rounded shadow text-center">
+          <h1 className="text-2xl font-bold text-yellow-600 mb-4">Mobile Not Supported</h1>
+          <p className="text-gray-700">This website is not accessible on mobile devices. Please use a desktop or laptop browser.</p>
+        </div>
+      </div>
+    );
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
