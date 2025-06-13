@@ -216,3 +216,67 @@ export async function checkTrialStatus(): Promise<{ status: "active" | "expired"
     return { status: "expired", message: "Unable to verify trial status. Please try again later." };
   }
 }
+
+// Device Fingerprint APIs
+
+// Add a new device fingerprint
+export async function addDeviceFingerprint(data: { user_id: string; fingerprints: string; created_at: string; status: string }) {
+  const res = await fetch(`${API_BASE_URL}api/device-fingerprint/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok || result.status !== '1') throw new Error(result.message || 'Failed to add device fingerprint');
+  return result;
+}
+
+// Update a device fingerprint by device_id
+export async function updateDeviceFingerprint(device_id: string, data: { user_id: string; fingerprints: string; created_at: string; status: string }) {
+  const res = await fetch(`${API_BASE_URL}api/device-fingerprint/update/${device_id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  const result = await res.json();
+  if (!res.ok || result.status !== '1') throw new Error(result.message || 'Failed to update device fingerprint');
+  return result;
+}
+
+// Delete a device fingerprint by device_id
+export async function deleteDeviceFingerprint(device_id: string) {
+  const res = await fetch(`${API_BASE_URL}api/device-fingerprint/delete/${device_id}`, { method: 'DELETE' });
+  const result = await res.json();
+  if (!res.ok || result.status !== '1') throw new Error(result.message || 'Failed to delete device fingerprint');
+  return result;
+}
+
+// Get all device fingerprints (optionally filter by user_id)
+export async function listDeviceFingerprints(user_id?: string) {
+  const url = new URL(`${API_BASE_URL}api/device-fingerprint/list`);
+  if (user_id) url.searchParams.append('user_id', user_id);
+  const res = await fetch(url.toString());
+  const result = await res.json();
+  if (!res.ok || result.status !== '1') throw new Error(result.message || 'Failed to fetch device fingerprints');
+  return result.payload;
+}
+
+// Get all device fingerprints with status 1 (optionally filter by user_id)
+export interface DeviceFingerprint {
+  device_id: string;
+  user_id: string;
+  fingerprints: string;
+  created_at: string;
+  status: string;
+}
+
+export async function listActiveDeviceFingerprints(user_id?: string): Promise<DeviceFingerprint[]> {
+  const url = new URL(`${API_BASE_URL}api/device-fingerprint/list`);
+  if (user_id) url.searchParams.append('user_id', user_id);
+  url.searchParams.append('status', '1'); // Always request status 1 from backend
+  const res = await fetch(url.toString());
+  const result = await res.json();
+  if (!res.ok || result.status !== '1') throw new Error(result.message || 'Failed to fetch device fingerprints');
+  // If backend does not filter, filter here as well
+  return (result.payload as DeviceFingerprint[]).filter(fp => fp.status === '1');
+}

@@ -8,17 +8,20 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Clock, Lock, Mail } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useNavigate } from 'react-router-dom';
-import { loginApi } from '@/lib/api';
+import { loginApi, addDeviceFingerprint, listActiveDeviceFingerprints } from '@/lib/api';
 import { useMobileBlock } from '@/hooks/use-mobile';
+import FingerprintJS from '@fingerprintjs/fingerprintjs';
 
 const LoginForm = () => {
-  const isMobile = useMobileBlock();
+  // const isMobile = useMobileBlock();
 
   // All hooks must be called unconditionally
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [deviceFingerprint, setDeviceFingerprint] = useState('');
+  const [activeFingerprints, setActiveFingerprints] = useState<string[]>([]);
   const { toast } = useToast();
   const navigate = useNavigate();
   const { setUser } = useAuth();
@@ -44,16 +47,43 @@ const LoginForm = () => {
     }
   }, [navigate]);
 
-  if (isMobile) {
-    return (
-      <div className="flex flex-col items-center justify-center h-screen bg-yellow-50">
-        <div className="p-8 bg-white rounded shadow text-center">
-          <h1 className="text-2xl font-bold text-yellow-600 mb-4">Mobile Not Supported</h1>
-          <p className="text-gray-700">This website is not accessible on mobile devices. Please use a desktop or laptop browser.</p>
-        </div>
-      </div>
-    );
-  }
+  // if (isMobile) {
+  //   return (
+  //     <div className="flex flex-col items-center justify-center h-screen bg-yellow-50">
+  //       <div className="p-8 bg-white rounded shadow text-center">
+  //         <h1 className="text-2xl font-bold text-yellow-600 mb-4">Mobile Not Supported</h1>
+  //         <p className="text-gray-700">This website is not accessible on mobile devices. Please use a desktop or laptop browser.</p>
+  //       </div>
+  //     </div>
+  //   );
+  // }
+
+  useEffect(() => {
+    FingerprintJS.load().then(fp => fp.get()).then(result => {
+      setDeviceFingerprint(result.visitorId);
+    });
+  }, []);
+
+  // Fetch active fingerprints for the entered email/user
+  useEffect(() => {
+    const fetchActiveFingerprints = async () => {
+      if (!email) {
+        setActiveFingerprints([]);
+        return;
+      }
+      try {
+        // Try to get user id by email from employees (if available)
+        // For now, try both id and email as id for demo/debug
+        // In production, you should map email to user_id via an API
+        const userId = email; // fallback if you don't have userId
+        const fps = await listActiveDeviceFingerprints(userId);
+        setActiveFingerprints(fps.map(fp => fp.fingerprints));
+      } catch {
+        setActiveFingerprints([]);
+      }
+    };
+    fetchActiveFingerprints();
+  }, [email]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,16 +93,52 @@ const LoginForm = () => {
     try {
       // Only send email and password
       const data = await loginApi(email, password);
+      // Defensive: extract user fields from payload, fallback to empty/defaults
+      const payload = data.payload as Record<string, unknown>;
+      const id = typeof payload.id === 'string' ? payload.id : (typeof payload.user_id === 'string' ? payload.user_id : String(payload.user_id ?? ''));
+      const role = payload.role === 'admin' || payload.role === 'employee' ? payload.role : 'employee';
+      // Admins skip device fingerprint check
+      if (role !== 'admin') {
+        try {
+          const fp = await FingerprintJS.load();
+          const result = await fp.get();
+          const visitorId = result.visitorId;
+          // Debug: log visitorId and active fingerprints
+          console.log('Device visitorId:', visitorId);
+          const activeFingerprints = await listActiveDeviceFingerprints(id);
+          console.log('Active fingerprints for user:', activeFingerprints.map(fp => fp.fingerprints));
+          const match = activeFingerprints.find(fp => fp.fingerprints === visitorId);
+          if (!match) {
+            // Register this device fingerprint with status 0 for admin approval
+            try {
+              await addDeviceFingerprint({
+                user_id: id,
+                fingerprints: visitorId,
+                created_at: new Date().toISOString(),
+                status: '0',
+              });
+              setError('Device not matched. Your device has been sent for admin approval.');
+            } catch (addErr) {
+              setError('Device not matched and failed to register device for approval.');
+            }
+            setLoading(false);
+            return;
+          }
+          // If matched, skip generating/sending new fingerprint
+          localStorage.setItem('deviceFingerprint', visitorId);
+        } catch (fpErr) {
+          setError('Device fingerprint check failed. Please try again.');
+          setLoading(false);
+          return;
+        }
+      }
+      // If fingerprint matches or admin, continue login
       toast({
         title: 'Login Successful',
         description: 'Welcome to AttendanceTracker Pro',
       });
       if (data.payload?.auth_token) {
         localStorage.setItem('token', data.payload.auth_token);
-        // Defensive: extract user fields from payload, fallback to empty/defaults
-        const payload = data.payload as Record<string, unknown>;
-        // Accept both id and user_id for compatibility
-        const id = typeof payload.id === 'string' ? payload.id : (typeof payload.user_id === 'string' ? payload.user_id : String(payload.user_id ?? ''));
         const name = typeof payload.name === 'string' ? payload.name : '';
         let role: 'admin' | 'employee' = 'employee';
         if (payload.role === 'admin' || payload.role === 'employee') role = payload.role;
@@ -174,6 +240,22 @@ const LoginForm = () => {
 
          
         </CardContent>
+        {deviceFingerprint && (
+          <div className="mt-4 text-center text-xs text-gray-500 select-all break-all">
+            <span className="font-semibold text-gray-700">Device Fingerprint:</span><br />
+            <span>{deviceFingerprint}</span>
+            {activeFingerprints.length > 0 && (
+              <div className="mt-2">
+                <span className="font-semibold text-gray-700">Active Fingerprints for this user:</span>
+                <ul className="mt-1 text-xs text-gray-500">
+                  {activeFingerprints.map((fp, idx) => (
+                    <li key={idx} className="break-all">{fp}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </Card>
     </div>
   );

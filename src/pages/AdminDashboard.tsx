@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getEmployees, addEmployee, updateEmployee, deleteEmployee, listAttendance, getTodayAttendance } from '@/lib/api';
 import { getIPs, addIP, deleteIP } from '@/lib/api';
 import { useAuth } from '@/context/useAuth';
+import { listDeviceFingerprints, updateDeviceFingerprint} from '@/lib/api';
 
 function getWorkingDays(year: number, month: number, holidays: string[] = []) {
   let workingDays = 0;
@@ -56,6 +57,11 @@ const AdminDashboard = () => {
   const [holidays, setHolidays] = useState<string[]>([]);
   const [newHoliday, setNewHoliday] = useState('');
 
+  // Pending Device Fingerprints
+  const [pendingFingerprints, setPendingFingerprints] = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [employeeMap, setEmployeeMap] = useState({});
+
   useEffect(() => {
     getEmployees()
       .then(setEmployees)
@@ -77,6 +83,25 @@ const AdminDashboard = () => {
       });
     fetchAttendanceRecords();
   }, [toast]);
+
+  useEffect(() => {
+    if (!user) return;
+    setPendingLoading(true);
+    listDeviceFingerprints()
+      .then((fps) => {
+        setPendingFingerprints(fps.filter(fp => fp.status === '0'));
+      })
+      .catch(() => setPendingFingerprints([]))
+      .finally(() => setPendingLoading(false));
+    // Fetch all employees and build a map for quick lookup
+    getEmployees().then((emps) => {
+      const map = {};
+      emps.forEach(emp => {
+        map[emp.id || emp.user_id] = emp.name;
+      });
+      setEmployeeMap(map);
+    });
+  }, [user]);
 
   const fetchAttendanceRecords = async () => {
     setLoading(true);
@@ -244,6 +269,16 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleConfirmDevice = async (fp) => {
+    try {
+      await updateDeviceFingerprint(fp.device_id, { ...fp, status: '1' });
+      setPendingFingerprints(pendingFingerprints.filter(f => f.device_id !== fp.device_id));
+      toast({ title: 'Device Confirmed', description: 'Device is now active and can be used for login.' });
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to confirm device', variant: 'destructive' });
+    }
+  };
+
   // Helper to get stats for a specific employee for this month
   const getEmployeeMonthStats = (employeeId: string) => {
     const thisMonth = new Date().getMonth();
@@ -288,6 +323,52 @@ const AdminDashboard = () => {
   return (
     <Layout title="Admin Dashboard">
       <div className="space-y-6">
+        {/* Pending Device Fingerprints */}
+        <div className="w-full mb-6">
+          <Card className="w-full">
+            <CardHeader>
+              <CardTitle>Pending Device Fingerprints</CardTitle>
+              <CardDescription>Devices pending confirmation (status 0). Confirm to allow login.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pendingLoading ? (
+                <div className="text-center py-4">Loading...</div>
+              ) : pendingFingerprints.length === 0 ? (
+                <div className="text-center py-4 text-gray-500">No pending devices.</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>User ID</TableHead>
+                        <TableHead>Fingerprint</TableHead>
+                        <TableHead>Created At</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pendingFingerprints.map(fp => (
+                        <TableRow key={fp.device_id}>
+                          <TableCell>{employeeMap[fp.user_id] || fp.user_id}</TableCell>
+                          <TableCell className="font-mono text-xs break-all max-w-xs">{fp.fingerprints}</TableCell>
+                          <TableCell>{fp.created_at}</TableCell>
+                          <TableCell><Badge variant="secondary">Pending</Badge></TableCell>
+                          <TableCell>
+                            <Button size="sm" onClick={() => handleConfirmDevice(fp)}>
+                              Confirm Device
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Stats Cards - Show Total Employees, Present Today, Absent Today, and Total Records */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
           <Card className="bg-gradient-to-r from-blue-50 to-blue-100 border-blue-200 shadow-md">
