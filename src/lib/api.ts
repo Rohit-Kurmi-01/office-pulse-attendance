@@ -1,7 +1,7 @@
 // src/lib/api.ts
 import { AttendanceRecord } from '@/types';
 
-const API_BASE_URL = 'http://localhost:3001/';
+const API_BASE_URL = 'https://attendance-backend-nbpy.onrender.com/'; // Update with your backend URL
 
 export async function getAllowedIPs() {
   const res = await fetch('/api/allowed-ips');
